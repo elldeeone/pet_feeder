@@ -1,0 +1,15 @@
+# Pet Feeder - Local Control Configuration
+# Add these sections to your existing Home Assistant configuration.yaml
+
+shell_command:
+  pet_feeder_feed: >-
+    echo "echo -en '\xff\xff\x01\x01\x00' > /dev/ttySAK1" | nc -w 3 10.0.10.129 9990
+  pet_feeder_feed_telnet: >-
+    expect -c '
+    set timeout 5;
+    spawn telnet 10.0.10.129;
+    expect "login:"; send "root\r";
+    expect "Password:"; send "AK2040jk\r";
+    expect "#"; send "echo -en \"\\xff\\xff\\x01\\x01\\x00\" > /dev/ttySAK1\r";
+    expect "#"; send "exit\r";
+    expect eof'

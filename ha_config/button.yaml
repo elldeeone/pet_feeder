@@ -1,0 +1,12 @@
+# Pet Feeder Button Entity
+# Add to configuration.yaml: button: !include button.yaml
+# Or merge into your existing button config
+
+- platform: template
+  buttons:
+    pet_feeder_dispense:
+      unique_id: pet_feeder_dispense
+      name: "Pet Feeder - Dispense"
+      icon: mdi:food-drumstick
+      press:
+        - action: shell_command.pet_feeder_feed

@@ -1,0 +1,115 @@
+{
+    "result": [
+        {
+            "active_time": 1668083999,
+            "biz_type": 0,
+            "category": "sp",
+            "create_time": 1668083999,
+            "icon": "smart/icon/ay1541472742486ZYDmd/0194c135b159af6fbcaaf3f1d23da7a6.jpg",
+            "id": "<redacted>",
+            "ip": "<redacted>",
+            "lat": "<redacted>",
+            "local_key": "<redacted>",
+            "lon": "<redacted>",
+            "model": "",
+            "name": "PetFeeder",
+            "online": true,
+            "owner_id": "<redacted>",
+            "product_id": "i7lo7tk9knei7dxi",
+            "product_name": "V330L_PT01V_OEM(\u975e\u5ef6\u65f6)",
+            "status": [
+                {
+                    "code": "basic_indicator",
+                    "value": true
+                },
+                {
+                    "code": "basic_flip",
+                    "value": false
+                },
+                {
+                    "code": "basic_osd",
+                    "value": true
+                },
+                {
+                    "code": "motion_sensitivity",
+                    "value": "2"
+                },
+                {
+                    "code": "basic_nightvision",
+                    "value": "0"
+                },
+                {
+                    "code": "motion_record",
+                    "value": false
+                },
+                {
+                    "code": "motion_switch",
+                    "value": true
+                }
+            ],
+            "sub": false,
+            "time_zone": "+11:00",
+            "uid": "<redacted>",
+            "update_time": 1771724441,
+            "uuid": "<redacted>",
+            "category_name": "Smart Camera",
+            "gateway_id": "",
+            "mapping": {
+                "101": {
+                    "code": "basic_indicator",
+                    "type": "Boolean",
+                    "values": {}
+                },
+                "103": {
+                    "code": "basic_flip",
+                    "type": "Boolean",
+                    "values": {}
+                },
+                "104": {
+                    "code": "basic_osd",
+                    "type": "Boolean",
+                    "values": {}
+                },
+                "106": {
+                    "code": "motion_sensitivity",
+                    "type": "Enum",
+                    "values": {
+                        "range": [
+                            "0",
+                            "1",
+                            "2"
+                        ]
+                    }
+                },
+                "108": {
+                    "code": "basic_nightvision",
+                    "type": "Enum",
+                    "values": {
+                        "range": [
+                            "0",
+                            "1",
+                            "2"
+                        ]
+                    }
+                },
+                "113": {
+                    "code": "motion_record",
+                    "type": "Boolean",
+                    "values": {}
+                },
+                "115": {
+                    "code": "movement_detect_pic",
+                    "type": "Raw",
+                    "values": {}
+                },
+                "134": {
+                    "code": "motion_switch",
+                    "type": "Boolean",
+                    "values": {}
+                }
+            }
+        }
+    ],
+    "success": true,
+    "note": "Credentials redacted. Use tinytuya wizard to extract your own device ID and local key."
+}

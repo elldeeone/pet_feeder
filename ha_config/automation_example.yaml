@@ -1,0 +1,44 @@
+# Scheduled feeding automations using MQTT bridge
+# Add to your automations.yaml or create via the HA UI
+#
+# These replace the old shell_command approach — the MQTT bridge handles
+# multi-portion dispensing with proper 10s gaps automatically.
+
+# Morning feed — 3 portions at 7am
+- id: pet_feeder_morning
+  alias: "Pet Feeder - Morning Feed"
+  trigger:
+    - platform: time
+      at: "07:00:00"
+  action:
+    - action: number.set_value
+      target:
+        entity_id: number.pet_feeder_portions
+      data:
+        value: 3
+
+# Evening feed — 3 portions at 6pm
+- id: pet_feeder_evening
+  alias: "Pet Feeder - Evening Feed"
+  trigger:
+    - platform: time
+      at: "18:00:00"
+  action:
+    - action: number.set_value
+      target:
+        entity_id: number.pet_feeder_portions
+      data:
+        value: 3
+
+# Optional: notify when feeding completes
+- id: pet_feeder_done_notify
+  alias: "Pet Feeder - Feeding Complete"
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.pet_feeder_feeding
+      from: "on"
+      to: "off"
+  action:
+    - action: notify.notify
+      data:
+        message: "Pet feeder finished dispensing"

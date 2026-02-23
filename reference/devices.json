@@ -1,0 +1,70 @@
+[
+    {
+        "name": "PetFeeder",
+        "id": "<redacted>",
+        "key": "<redacted>",
+        "mac": "<redacted>",
+        "uuid": "<redacted>",
+        "category": "sp",
+        "product_name": "V330L_PT01V_OEM(\u975e\u5ef6\u65f6)",
+        "product_id": "i7lo7tk9knei7dxi",
+        "biz_type": 0,
+        "model": "",
+        "sub": false,
+        "icon": "https://images.tuyaeu.com/smart/icon/ay1541472742486ZYDmd/0194c135b159af6fbcaaf3f1d23da7a6.jpg",
+        "mapping": {
+            "101": {
+                "code": "basic_indicator",
+                "type": "Boolean",
+                "values": {}
+            },
+            "103": {
+                "code": "basic_flip",
+                "type": "Boolean",
+                "values": {}
+            },
+            "104": {
+                "code": "basic_osd",
+                "type": "Boolean",
+                "values": {}
+            },
+            "106": {
+                "code": "motion_sensitivity",
+                "type": "Enum",
+                "values": {
+                    "range": [
+                        "0",
+                        "1",
+                        "2"
+                    ]
+                }
+            },
+            "108": {
+                "code": "basic_nightvision",
+                "type": "Enum",
+                "values": {
+                    "range": [
+                        "0",
+                        "1",
+                        "2"
+                    ]
+                }
+            },
+            "113": {
+                "code": "motion_record",
+                "type": "Boolean",
+                "values": {}
+            },
+            "115": {
+                "code": "movement_detect_pic",
+                "type": "Raw",
+                "values": {}
+            },
+            "134": {
+                "code": "motion_switch",
+                "type": "Boolean",
+                "values": {}
+            }
+        }
+    }
+]

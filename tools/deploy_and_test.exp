@@ -1,0 +1,51 @@
+#!/usr/bin/expect -f
+log_user 1
+set timeout 30
+
+spawn telnet 10.0.10.129
+
+expect "login:"
+send "root\r"
+expect -re "assword:"
+send "AK2040jk\r"
+expect "#"
+
+# Kill everything
+send "killall mqtt_feeder ak_tuya_ipc 2>/dev/null; sleep 1; echo CLEAR\r"
+expect "CLEAR"
+expect "#"
+
+# Download new mqtt_feeder v1.1
+puts "\n=== DOWNLOADING mqtt_feeder v1.1 ==="
+send "wget -q http://<YOUR_IP>:8888/mqtt_feeder_v11 -O /tmp/mqtt_feeder && chmod +x /tmp/mqtt_feeder && echo DL_OK\r"
+expect {
+    -timeout 30 "DL_OK" {}
+    timeout { puts "DL FAILED"; exit 1 }
+}
+expect "#"
+
+# Start it in foreground briefly to see init + then background it
+puts "\n=== STARTING mqtt_feeder v1.1 ==="
+send "/tmp/mqtt_feeder >> /tmp/mqtt_feeder_v11.log 2>&1 &\r"
+expect "#"
+
+# Wait for MCU init and MQTT connect
+send "sleep 8 && echo STARTED\r"
+expect {
+    -timeout 15 "STARTED" {}
+    timeout {}
+}
+expect "#"
+
+# Check the log
+puts "\n=== MQTT FEEDER LOG ==="
+send "cat /tmp/mqtt_feeder_v11.log 2>&1\r"
+expect "#"
+
+# Check process
+send "ps | grep mqtt_feeder | grep -v grep\r"
+expect "#"
+
+puts "\n=== READY - Try pressing Feed in HA! ==="
+send "exit\r"
+expect eof

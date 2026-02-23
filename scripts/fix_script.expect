@@ -1,0 +1,34 @@
+#!/usr/bin/expect -f
+
+set timeout 10
+
+spawn telnet 10.0.10.129
+expect "login:"
+send "root\r"
+expect "Password:"
+send "AK2040jk\r"
+expect "#"
+
+# Write the script using cat heredoc to avoid shell escaping issues
+send "cat > /mnt/config/tmp_test.sh << 'ENDSCRIPT'\r"
+expect ">"
+send "#!/bin/sh\r"
+expect ">"
+send "# recovery mode: keep stock boot services\r"
+expect ">"
+send "sleep 2\r"
+expect ">"
+send "exit 0\r"
+expect ">"
+send "ENDSCRIPT\r"
+expect "#"
+
+send "chmod +x /mnt/config/tmp_test.sh && sync\r"
+expect "#"
+
+send "cat /mnt/config/tmp_test.sh\r"
+expect "#"
+puts $expect_out(buffer)
+
+send "exit\r"
+expect eof

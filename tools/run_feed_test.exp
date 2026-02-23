@@ -1,0 +1,35 @@
+#!/usr/bin/expect -f
+log_user 1
+set timeout 300
+
+spawn telnet 10.0.10.129
+
+expect "login:"
+send "root\r"
+expect -re "assword:"
+send "AK2040jk\r"
+expect "#"
+
+send "killall mqtt_feeder ak_tuya_ipc 2>/dev/null; sleep 1; echo CLEAR\r"
+expect "CLEAR"
+expect "#"
+
+send "wget -q http://<YOUR_IP>:8888/mcu_feed_test -O /tmp/mcu_feed_test && chmod +x /tmp/mcu_feed_test && echo DL_OK\r"
+expect {
+    -timeout 30 "DL_OK" {}
+    timeout { puts "DL FAILED"; exit 1 }
+}
+expect "#"
+
+# Run all 6 tests with pauses - watch for motor!
+puts "\n=== RUNNING 6 FEED CANDIDATE TESTS ==="
+puts "=== 10 second pause between each - note WHICH test triggers motor ==="
+send "/tmp/mcu_feed_test 0 2>&1\r"
+expect {
+    -timeout 180 "ALL TESTS DONE" {}
+    timeout { puts "TIMEOUT" }
+}
+expect "#"
+
+send "exit\r"
+expect eof

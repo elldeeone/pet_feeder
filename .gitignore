@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+*.bin
+!reference/*.bin
+!firmware/*.bin
+mqtt_feeder/mqtt_feeder
+mqtt_feeder/output/
+rtsp_server/rtsp_server
+rtsp_server/toolchain/
+
+# Compiled probe tools
+tools/mcu_probe
+tools/mcu_probe2
+tools/mcu_feed_test
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+screenlog.*
+*.log
