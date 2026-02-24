@@ -44,27 +44,32 @@ Custom firmware for the Advwin 6L pet feeder, replacing Tuya cloud dependency wi
 
 ## Boot Flow
 
-Understanding the boot sequence is critical — the RTSP camera only works if the stock binary initialises hardware first.
+Understanding the boot sequence is critical. The custom rootfs has two key modifications:
+- `tuya_daemon.sh` is neutered (starts with `exit`) so the stock Tuya binary never runs
+- `start_tuya_ipc.sh` has a background subshell that swaps in the ArnCo RTSP binary after WiFi connects
 
 ```
 1. Device powers on
 2. /usr/sbin/start_tuya_ipc.sh runs:
-   a. /mnt/config/tmp_test.sh executes (copies mqtt_feeder to /tmp/bin/ for PATH)
+   a. /mnt/config/tmp_test.sh executes:
+      - Copies mqtt_feeder to /tmp/bin/ (in PATH)
+      - Starts NTP time sync in background (waits for WiFi first)
       NOTE: The name "tmp_test.sh" cannot be changed — the stock firmware
       hardcodes this filename as a hook in start_tuya_ipc.sh (likely for
       factory testing). We repurpose it since the rootfs is read-only squashfs.
-   b. Stock ak_tuya_ipc starts via tuya_daemon.sh (initialises camera ISP, audio, etc.)
+   b. tuya_daemon.sh starts but immediately exits (neutered with `exit` at top)
    c. feed_watchdog_daemon.sh starts (keeps hardware watchdog fed)
-   d. Background subshell waits for WiFi (up to 60s)
-   e. After WiFi: kills stock binary + tuya_daemon.sh
-   f. Copies /usr/sbin/ak_tuya_rtsp to /tmp/bin/ak_tuya_ipc and starts it
-      (ArnCo binary — has RTSP server, reuses stock's hardware init)
-   g. Starts mqtt_feeder (found in /tmp/bin/ via PATH)
+   d. Background subshell in start_tuya_ipc.sh waits for WiFi (up to 60s) + 5s
+   e. Copies /usr/sbin/ak_tuya_rtsp to /tmp/bin/ak_tuya_ipc and starts it
+      (ArnCo binary — initialises camera ISP/sensor and serves RTSP)
+   f. Starts mqtt_feeder (found in /tmp/bin/ via PATH)
 3. RTSP available at rtsp://10.0.10.129:554/jkstream
 4. mqtt_feeder connects to MQTT broker, publishes HA Discovery
 ```
 
-**Key insight**: The ArnCo RTSP binary (`ak_tuya_rtsp`) cannot initialise the camera hardware from scratch. The stock `ak_tuya_ipc` must run first to set up the ISP/sensor, then ArnCo takes over and adds RTSP. If you start ArnCo directly without the stock binary running first, you get video encoding but no RTSP server.
+**Key insight**: The ArnCo RTSP binary (`ak_tuya_rtsp`) initialises the camera hardware (ISP, sensor, video encoder, OSD) from scratch. The ArnCo swap logic lives in the custom rootfs's `start_tuya_ipc.sh`, NOT in `tmp_test.sh`. Keep `tmp_test.sh` minimal — it should only set up PATH and NTP. Do not duplicate the ArnCo swap in `tmp_test.sh` or it will race with `start_tuya_ipc.sh`.
+
+**NTP**: The device has no RTC battery and WAN is blocked by firewall. `tmp_test.sh` runs `ntpd -p 10.0.10.1 -q` (blocking sync from UDM gateway) after WiFi connects, before the ArnCo binary starts. This ensures the OSD timestamp shows the correct date. Note: the OSD timestamp freezes at startup time and does not update in real-time (the Tuya cloud time sync that normally drives OSD updates is blocked by the firewall).
 
 ## Network Ports
 
@@ -190,7 +195,30 @@ All persistent files are on `/mnt/config/` (jffs2, writable):
 ```
 /mnt/config/mqtt_feeder       # Static ARM binary (latest build)
 /mnt/config/mqtt_feeder.conf  # MQTT broker config
-/mnt/config/tmp_test.sh       # Boot script: copies mqtt_feeder to /tmp/bin/ (in PATH)
+/mnt/config/tmp_test.sh       # Boot hook: copies mqtt_feeder to PATH + NTP sync
+```
+
+### Boot Hook (`/mnt/config/tmp_test.sh`)
+
+This script must stay minimal. The ArnCo swap logic is in the rootfs's `start_tuya_ipc.sh` — do NOT duplicate it here or both will race.
+
+```bash
+#!/bin/sh
+# Copy mqtt_feeder to /tmp/bin/ (in PATH) for start_tuya_ipc.sh
+mkdir -p /tmp/bin
+cp /mnt/config/mqtt_feeder /tmp/bin/mqtt_feeder 2>/dev/null
+chmod +x /tmp/bin/mqtt_feeder 2>/dev/null
+# NTP sync in background (waits for WiFi first)
+(
+  i=0
+  while [ $i -lt 60 ]; do
+    ip addr show wlan0 2>/dev/null | grep -q 'inet ' && break
+    i=$((i+1))
+    sleep 1
+  done
+  ntpd -p 10.0.10.1 -q 2>/dev/null
+  ntpd -p 10.0.10.1 2>/dev/null &
+) &
 ```
 
 ### Config File (`/mnt/config/mqtt_feeder.conf`)
@@ -232,9 +260,11 @@ rtsp://10.0.10.129:554/jkstream
 
 ### How It Works
 
-The RTSP server is provided by the ArnCo firmware binary (`ak_tuya_rtsp`), which is a modified version of the stock Tuya `ak_tuya_ipc`. The ArnCo binary includes an ONVIF/RTSP server that the stock binary lacks.
+The RTSP server is provided by the ArnCo firmware binary (`ak_tuya_rtsp`), which is a modified version of the stock Tuya `ak_tuya_ipc`. The ArnCo binary includes an ONVIF/RTSP server that the stock binary lacks. It initialises all camera hardware (ISP, sensor, video encoder, OSD, audio) from scratch — it does not need the stock binary to run first.
 
-**The binary swap happens at boot** (see Boot Flow above). The stock binary must initialise the camera hardware (ISP, sensor, video encoder) before the ArnCo binary can take over and serve RTSP.
+**The binary swap happens at boot** (see Boot Flow above). The custom rootfs's `start_tuya_ipc.sh` copies ArnCo to `/tmp/bin/ak_tuya_ipc` and starts it after WiFi connects.
+
+**OSD timestamp**: ArnCo renders a date/time overlay in the top-left corner. It reads `save_last_date.txt` at startup and writes the current system time to it. The OSD shows 12-hour time without AM/PM (e.g. `19:36` displays as `7:36`). The timestamp freezes at startup time and does not live-update because the Tuya cloud time service (which normally drives updates) is blocked by the firewall. Correct date requires NTP to have synced before ArnCo starts (handled by `tmp_test.sh`). The `tz_sec` field in `basic_config.ini` controls the timezone offset in seconds (0 = UTC).
 
 ### Adding to Home Assistant
 
@@ -261,19 +291,20 @@ Or add via UI: Settings → Devices → Add Integration → Generic Camera → e
 
 ```
 /usr/sbin/
-├── ak_tuya_ipc           # Stock Tuya binary (camera HW init, no RTSP)
-├── ak_tuya_rtsp          # ArnCo binary (RTSP-enabled, needs stock init first)
-├── start_tuya_ipc.sh     # Main startup script (stock → ArnCo swap logic)
-├── tuya_daemon.sh        # Watchdog wrapper for ak_tuya_ipc
+├── ak_tuya_ipc           # Stock Tuya binary (unused — tuya_daemon.sh is neutered)
+├── ak_tuya_rtsp          # ArnCo binary (RTSP-enabled, initialises HW from scratch)
+├── start_tuya_ipc.sh     # Modified startup script (ArnCo swap after WiFi)
+├── tuya_daemon.sh        # Neutered (starts with `exit`) — prevents stock binary
 ├── feed_watchdog_daemon.sh  # Hardware watchdog feeder
 └── product_wifi_scan.sh  # WiFi setup
 
 /mnt/config/              # Persistent jffs2 partition
 ├── mqtt_feeder           # Our MQTT bridge binary
 ├── mqtt_feeder.conf      # MQTT config
-├── tmp_test.sh           # Boot hook (copies mqtt_feeder to PATH)
-├── basic_config.ini      # Device config
-├── dev_config.ini        # Device config
+├── tmp_test.sh           # Boot hook: copies mqtt_feeder to PATH + NTP sync
+├── save_last_date.txt    # ArnCo's cached date (used for OSD timestamp)
+├── basic_config.ini      # Device config (tz_sec, flip, night mode, etc.)
+├── dev_config.ini        # Device config (volume, contrast, motion detect)
 ├── tuya_user.db          # Tuya credentials (needed for ArnCo)
 └── wpa_conf              # WiFi credentials
 
@@ -362,9 +393,17 @@ docker run --rm -v $(pwd):/build mqtt_feeder_builder \
 - `catch_uboot*.sh` — Intercept U-Boot for UART recovery
 - `recover_uart_bootloop.sh` — Full UART recovery procedure
 - `detect_baud.sh` — Auto-detect serial baud rate
-- `deploy_rtsp.sh` — Deploy RTSP-related files
+- `deploy_rtsp.sh` — **CAUTION**: Deploys custom `rtsp_server` and overwrites `tmp_test.sh` with a version that does NOT include the ArnCo swap. This will break RTSP. See warning below.
 - `transfer_arnco.sh` — Transfer ArnCo binary to device
 - `fix_device.sh` / `fix_script.expect` — Fix broken device state
+
+### Custom RTSP Server (`rtsp_server/`) — Dead End
+
+The `rtsp_server/` directory contains a custom RTSP server written against the Anyka SDK. **This does not work on the device** and should not be deployed. The binary links against `libmpi_osd.so` (OSD library), which pulls in device-only shared libraries (`libplat_mem.so`, `libplat_dbg.so`, `libplat_log.so`, `libplat_osal.so`) that exist on the device at `/usr/lib/` but are NOT in the SDK. These libraries provide DMA allocation, debug logging, and OSAL symbols that cannot be stubbed. Attempts to provide stub `.so` files, use `LD_PRELOAD`, or export C stub functions all failed due to the deep dependency chain.
+
+The working RTSP solution is the ArnCo binary, not this custom code. The `rtsp_server/` code is kept for reference only.
+
+**WARNING about `deploy_rtsp.sh`**: Running this script overwrites `/mnt/config/tmp_test.sh` on the device with a version that starts the (broken) custom `rtsp_server` instead of relying on the ArnCo swap in `start_tuya_ipc.sh`. If you accidentally run it, restore `tmp_test.sh` on the device to its correct minimal form (see Boot Flow section).
 
 ## UDM Firewall
 
@@ -390,11 +429,10 @@ This keeps LAN communication (RTSP, MQTT, telnet) working while preventing Tuya 
 5. If ArnCo is also using serial port, there may be contention on /dev/ttySAK1
 
 ### RTSP stream not available
-1. Ensure device was cleanly booted (stock binary must run first)
-2. Check ArnCo is running: `ps | grep ak_tuya_ipc`
-3. Check port 554: `netstat -tlnp | grep 554`
-4. Check log: `grep -i "ONVIFSERVER\|rtsp" /tmp/rtsp.log`
-5. If missing, reboot the device — the stock→ArnCo swap must happen in order
+1. Check ArnCo is running: `ps | grep ak_tuya_ipc`
+2. Check port 554: `netstat -tlnp | grep 554`
+3. Check log: `grep -i "ONVIFSERVER\|rtsp" /tmp/rtsp.log`
+4. If not running, reboot — the ArnCo swap in `start_tuya_ipc.sh` requires a clean boot
 
 ### Device not responding after flash
 1. Connect UART (see UART Recovery section)
