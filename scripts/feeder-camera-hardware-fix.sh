@@ -1,5 +1,5 @@
 #!/bin/sh
-# Correct this SC223A feeder's IR-cut GPIO map in the existing RTSP binary.
+# Correct this SC223A feeder's IR-cut GPIO map and camera keyframe interval.
 # Original firmware uses GPIO80/81; ArnCo uses 23/24 and drives 81 as a speaker.
 # Runs before the normal boot-time binary swap. Never opens MQTT or the UART.
 set -eu
@@ -8,7 +8,7 @@ source_file=${CAMERA_HW_SOURCE:-/usr/sbin/ak_tuya_rtsp}
 patched_file=${CAMERA_HW_PATCHED:-/tmp/bin/ak_tuya_rtsp_gpio_fixed}
 running_file=${CAMERA_HW_RUNNING:-/tmp/bin/ak_tuya_ipc}
 source_sha=5c07bcd7b0bdd0d76583ea15ca0a241f3c467afcc617204eddfe7fa8546fdf23
-patched_sha=1f37ee7a488e1f5d8b0a0d1c7ac0dba44dcb50ce3aaaff23cc46f82072baedda
+patched_sha=295b3231418b9191b1f95ee63ea7339b941f8b8c46bdfd56a408b85ccc874add
 
 checksum() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -48,6 +48,9 @@ printf '\120\000\240\343' | dd of="$patched_file" bs=1 seek=1259548 conv=notrunc
 printf '\000\000\240\343\020\200\275\350' | dd of="$patched_file" bs=1 seek=1259412 conv=notrunc 2>/dev/null
 # 0x14383c: Disable incompatible speaker GPIO81 writes; 0010a0e15100a0e3 -> 0000a0e31eff2fe1
 printf '\000\000\240\343\036\377\057\341' | dd of="$patched_file" bs=1 seek=1259580 conv=notrunc 2>/dev/null
+
+# 0x141df0: Native encoder GOP 60 -> 10 frames; 3c30a0e3 -> 0a30a0e3
+printf '\012\060\240\343' | dd of="$patched_file" bs=1 seek=1252848 conv=notrunc 2>/dev/null
 
 [ "$(checksum "$patched_file")" = "$patched_sha" ] || {
   rm -f "$patched_file"

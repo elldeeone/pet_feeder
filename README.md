@@ -289,10 +289,10 @@ The RTSP server is provided by the ArnCo firmware binary (`ak_tuya_rtsp`), which
 
 The stock feeder executable drives the IR-cut coil with a 200 ms pulse on GPIO80 for day or GPIO81 for night. The installed ArnCo RTSP executable instead uses GPIO23/24 and treats GPIO81 as a speaker-enable output. This mismatch left the infrared filter in the wrong position and produced a pink daylight image. A bounded pulse using the original mapping restored neutral colours.
 
-`scripts/feeder-camera-hardware-fix.sh` corrects only that exact ArnCo build: ten IR-cut GPIO instructions and the incompatible GPIO81 speaker initialisation/control. It verifies the complete source SHA-256, creates a corrected RAM copy, verifies the complete result, then temporarily bind-mounts it over the source used by the unchanged boot script. After the normal boot script copies and starts it, the helper verifies the running file, removes the temporary mount and deletes the extra RAM copy. The immutable firmware and normal boot-time swap remain intact; only `/tmp/bin/ak_tuya_ipc` retains the correction. The helper refuses an unknown executable rather than patching arbitrary offsets.
+`scripts/feeder-camera-hardware-fix.sh` corrects only that exact ArnCo build: ten IR-cut GPIO instructions, the incompatible GPIO81 speaker initialisation/control, and the native encoder keyframe interval described below. It verifies the complete source SHA-256, creates a corrected RAM copy, verifies the complete result, then temporarily bind-mounts it over the source used by the unchanged boot script. After the normal boot script copies and starts it, the helper verifies the running file, removes the temporary mount and deletes the extra RAM copy. The immutable firmware and normal boot-time swap remain intact; only `/tmp/bin/ak_tuya_ipc` retains the correction. The helper refuses an unknown executable rather than patching arbitrary offsets.
 
 - Original SHA-256: `5c07bcd7b0bdd0d76583ea15ca0a241f3c467afcc617204eddfe7fa8546fdf23`
-- Corrected SHA-256: `1f37ee7a488e1f5d8b0a0d1c7ac0dba44dcb50ce3aaaff23cc46f82072baedda`
+- Corrected SHA-256: `295b3231418b9191b1f95ee63ea7339b941f8b8c46bdfd56a408b85ccc874add`
 
 Automatic day/night decisions remain in the camera firmware. The helper never communicates with MQTT or the feeder MCU. To roll back, remove the hardware helper invocation from `tmp_test.sh` and reboot outside a meal window; the original flash executable is unchanged. The live timestamp flag can be retained independently. A host-side `--prepare-only` run supports checksum and byte comparison without mounts or camera actions; use `CAMERA_HW_SOURCE` and `CAMERA_HW_PATCHED` for temporary fixture paths.
 
@@ -301,6 +301,26 @@ Automatic day/night decisions remain in the camera firmware. The helper never co
 Use the Generic Camera integration with an RTSP stream source. This installation uses `rtsp://127.0.0.1:8554/kitchen_camera`, backed by `/config/go2rtc.yaml` on HA. Keep RTSP transport TCP and enable **Use wallclock as timestamps** in the integration's advanced options. The feeder can omit packet timestamps; without this option HA's HLS worker reports `No dts in 7 consecutive packets`.
 
 Do not use an HTTP URL on the RTSP port as a still-image URL. The integration generates stills from its stream. A longer FFmpeg probe may be needed when testing the raw stream because parameter sets arrive in-band rather than in SDP. HA browser playback was verified at 1920×1080 after recovery on 14 October 2026.
+
+### Faster kitchen preview and playback
+
+The RTSP executable hard-codes a 60-frame keyframe interval in the native hardware encoder, for both main and sub streams. At the observed output rate of ten frames per second, the raw stream supplied a keyframe every six seconds. Its RTSP SDP also omits H.264 parameter sets, so joining decoders must wait for in-band setup data. HA snapshots took 8.45 seconds or hit the ten-second timeout. Preloading alone did not resolve this.
+
+The camera hardware helper changes the native encoder's GOP from 60 to 10 frames alongside the IR-cut corrections. ARM instruction `mov r3, #60` at virtual address `0x141df0` (file offset `1252848`) becomes `mov r3, #10`; the following halfword store writes the encoder's GOP field. Full source/output checksums guard this board-specific patch. The encoder's resolution, frame-rate target, bitrate settings and hardware implementation are retained. More frequent keyframes can change bandwidth and compression efficiency.
+
+Keep the existing direct relay configuration:
+
+```yaml
+streams:
+  kitchen_camera:
+    - rtsp://FEEDER_IP:554/jkstream
+```
+
+Generic Camera continues to use `rtsp://127.0.0.1:8554/kitchen_camera`, TCP and **Use wallclock as timestamps**. Its **Preload stream** preference keeps the stream ready between dashboard visits; see HA's [camera documentation](https://www.home-assistant.io/integrations/camera/#streaming-video). HA still performs its normal relay, demux and snapshot decoding, but no additional H.264 software encoder is needed.
+
+After the 14 October 2026 deployment and normal reboot, the device logged `gop=10` for both streams, and a raw probe measured one second between keyframes. Three authenticated HA snapshots completed successfully in 3.02–3.99 seconds. A subsequent browser live-player check reached ready state 4 at 1920×1080 in 2.13 seconds and continued playing. An earlier temporary HA software-encoding workaround was removed; the final process check showed only stream-copy FFmpeg workers and no H.264 software encoder. The normal relay and snapshot-decoding costs remain. These short startup measurements do not measure video delay behind real time or guarantee every client network's performance.
+
+To revert only the keyframe change while preserving colour correction, restore the prior verified hardware helper and reboot outside a meal window. Its output SHA-256 is `1f37ee7a488e1f5d8b0a0d1c7ac0dba44dcb50ce3aaaff23cc46f82072baedda`; the deployed device keeps that helper as `feeder-camera-hardware-fix.pre-speedup-20261014.sh`. Removing the helper invocation entirely also removes the IR-cut correction.
 
 ### Bounded camera logs and recovery
 
@@ -334,7 +354,7 @@ For a non-actuating host retention check, set `CAMERA_WATCH_LOG` and `CAMERA_WAT
 ├── mqtt_feeder           # Our MQTT bridge binary
 ├── mqtt_feeder.conf      # MQTT config
 ├── tmp_test.sh           # Boot hook: PATH, camera hardware correction, watermark, watchdog
-├── feeder-camera-hardware-fix.sh  # Verified board-specific IR-cut correction
+├── feeder-camera-hardware-fix.sh  # Verified IR-cut and encoder keyframe correction
 ├── feeder-camera-watch.sh        # Camera recovery and bounded RAM-backed logs
 ├── save_last_date.txt    # ArnCo's cached date (used for OSD timestamp)
 ├── basic_config.ini      # Device config (tz_sec, flip, night mode, etc.)
