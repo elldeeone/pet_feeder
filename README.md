@@ -285,6 +285,22 @@ The RTSP server is provided by the ArnCo firmware binary (`ak_tuya_rtsp`), which
 
 **OSD timestamp**: The overlay updates once per second when `/mnt/config/dp_file_flag/on_osd_file` exists. If the file is absent, the firmware can leave its startup timestamp painted onto otherwise live video. Restoring that flag fixed the stale date on 14 October 2026. The boot hook preserves it. The initial cached time is replaced when the vendor time service establishes the current local time. This installation retains its existing 12-hour display without AM/PM (13:00 Sydney appears as 1:00).
 
+### Image orientation
+
+This installation needs a 180-degree rotation. The ArnCo camera reads
+`/mnt/config/dp_file_flag/on_flip_file`; creating that persistent empty file
+enables its native flip/mirror operation. The `flip = 1` value in
+`basic_config.ini` did not enable rotation on its own. No HA/FFmpeg rotation
+filter is needed.
+
+Apply the flag with `touch /mnt/config/dp_file_flag/on_flip_file` and `sync`,
+then reboot the feeder while it is idle. A camera-only process restart can
+leave this firmware's kernel video buffers allocated; on 14 October it failed
+to recover and a normal device reboot was required. Verify a fresh frame in HA,
+its live timestamp, MQTT availability and portions after reboot. To undo the
+rotation, remove only that flag and reboot while idle. Never issue a food
+command as a camera test.
+
 ### IR-cut hardware compatibility
 
 The stock feeder executable drives the IR-cut coil with a 200 ms pulse on GPIO80 for day or GPIO81 for night. The installed ArnCo RTSP executable instead uses GPIO23/24 and treats GPIO81 as a speaker-enable output. This mismatch left the infrared filter in the wrong position and produced a pink daylight image. A bounded pulse using the original mapping restored neutral colours.
