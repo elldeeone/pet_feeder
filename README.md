@@ -53,7 +53,8 @@ Understanding the boot sequence is critical. The custom rootfs has two key modif
 2. /usr/sbin/start_tuya_ipc.sh runs:
    a. /mnt/config/tmp_test.sh executes:
       - Copies mqtt_feeder to /tmp/bin/ (in PATH)
-      - Starts NTP time sync in background (waits for WiFi first)
+      - Prepares the verified IR-cut hardware correction for the normal binary swap
+      - Enables the live watermark and starts the delayed camera watchdog
       NOTE: The name "tmp_test.sh" cannot be changed — the stock firmware
       hardcodes this filename as a hook in start_tuya_ipc.sh (likely for
       factory testing). We repurpose it since the rootfs is read-only squashfs.
@@ -67,9 +68,9 @@ Understanding the boot sequence is critical. The custom rootfs has two key modif
 4. mqtt_feeder connects to MQTT broker, publishes HA Discovery
 ```
 
-**Key insight**: The ArnCo RTSP binary (`ak_tuya_rtsp`) initialises the camera hardware (ISP, sensor, video encoder, OSD) from scratch. The ArnCo swap logic lives in the custom rootfs's `start_tuya_ipc.sh`, NOT in `tmp_test.sh`. Keep `tmp_test.sh` minimal — it should only set up PATH and NTP. Do not duplicate the ArnCo swap in `tmp_test.sh` or it will race with `start_tuya_ipc.sh`.
+**Key insight**: The ArnCo RTSP binary (`ak_tuya_rtsp`) initialises the camera hardware (ISP, sensor, video encoder, OSD) from scratch. The ArnCo swap logic lives in the custom rootfs's `start_tuya_ipc.sh`, NOT in `tmp_test.sh`. Keep `tmp_test.sh` minimal: PATH setup, the verified camera hardware helper and the delayed camera watchdog hook. Do not duplicate the ArnCo swap in `tmp_test.sh` or it will race with `start_tuya_ipc.sh`.
 
-**NTP**: The device has no RTC battery and WAN is blocked by firewall. `tmp_test.sh` runs `ntpd -p 10.0.10.1 -q` (blocking sync from UDM gateway) after WiFi connects, before the ArnCo binary starts. This ensures the OSD timestamp shows the correct date. Note: the OSD timestamp freezes at startup time and does not update in real-time (the Tuya cloud time sync that normally drives OSD updates is blocked by the firewall).
+**Time**: The device has no battery-backed RTC. The camera restores `save_last_date.txt` initially and its vendor time service subsequently updates the clock to local wall time. On 14 October this was verified against current Sydney time. The previous background NTP commands silently failed because `ntpd` was not in PATH; the gateway did not answer a bounded NTP test either. Those commands were removed. Do not run a competing UTC-setting NTP daemon against the vendor service, which stores local time in the system clock. No new WAN rule was added. The old claim that the overlay inherently freezes because of blocked cloud time was incorrect: the watermark flag had been disabled.
 
 ## Network Ports
 
@@ -160,6 +161,17 @@ The `mqtt_feeder/` directory contains a lightweight MQTT bridge that runs on the
 | Pet Feeder: Portions | Number (1-10) | Set how many portions per feed |
 | Pet Feeder: Feeding | Binary sensor | feeding/idle status |
 
+Version 1.2 accepts only a non-retained, non-duplicate `PRESS` feed message
+while idle. Portion commands must be integers from 1 to 10; HA's integral
+decimal format (for example `3.0`) is also accepted. MQTT reconnects publish
+the current feeding state and portion setting. The portion setting remains
+in memory, so restarting the process starts at its default of one portion.
+HA automations must set and confirm portions before each feed.
+
+The MCU's acknowledgement and idle state do not prove food was delivered.
+Verify dispensing with someone present; never automatically retry an
+ambiguous feed.
+
 ### Build
 
 Requires Docker. Cross-compiles a static musl-linked ARM binary (~81K):
@@ -168,6 +180,12 @@ Requires Docker. Cross-compiles a static musl-linked ARM binary (~81K):
 cd mqtt_feeder
 ./build.sh
 ```
+
+The linker uses `-static -no-pie` for the feeder's older ARM kernel. Run
+command validation on the development machine with `make -C mqtt_feeder test`.
+The test uses mocked feeder hardware and does not open a UART or MQTT
+connection. On the device, `mqtt_feeder --version` exits before configuration,
+network or UART initialisation.
 
 ### Deploy
 
@@ -195,30 +213,31 @@ All persistent files are on `/mnt/config/` (jffs2, writable):
 ```
 /mnt/config/mqtt_feeder       # Static ARM binary (latest build)
 /mnt/config/mqtt_feeder.conf  # MQTT broker config
-/mnt/config/tmp_test.sh       # Boot hook: copies mqtt_feeder to PATH + NTP sync
+/mnt/config/tmp_test.sh       # Boot hook: PATH, camera hardware correction, watermark, watchdog
 ```
 
 ### Boot Hook (`/mnt/config/tmp_test.sh`)
 
 This script must stay minimal. The ArnCo swap logic is in the rootfs's `start_tuya_ipc.sh` — do NOT duplicate it here or both will race.
 
-```bash
+```sh
 #!/bin/sh
-# Copy mqtt_feeder to /tmp/bin/ (in PATH) for start_tuya_ipc.sh
 mkdir -p /tmp/bin
 cp /mnt/config/mqtt_feeder /tmp/bin/mqtt_feeder 2>/dev/null
 chmod +x /tmp/bin/mqtt_feeder 2>/dev/null
-# NTP sync in background (waits for WiFi first)
-(
-  i=0
-  while [ $i -lt 60 ]; do
-    ip addr show wlan0 2>/dev/null | grep -q 'inet ' && break
-    i=$((i+1))
-    sleep 1
-  done
-  ntpd -p 10.0.10.1 -q 2>/dev/null
-  ntpd -p 10.0.10.1 2>/dev/null &
-) &
+
+# Correct the RTSP binary's board-specific IR-cut map before its normal swap.
+if [ -x /mnt/config/feeder-camera-hardware-fix.sh ]; then
+  /mnt/config/feeder-camera-hardware-fix.sh >/tmp/bin/camera-hardware-fix.log 2>&1 || true
+fi
+
+# Preserve the live date overlay; the vendor time service supplies local time.
+touch /mnt/config/dp_file_flag/on_osd_file
+
+# Camera-only recovery and bounded RAM-backed logging.
+if [ -x /mnt/config/feeder-camera-watch.sh ]; then
+  /mnt/config/feeder-camera-watch.sh >/dev/null 2>&1 </dev/null &
+fi
 ```
 
 ### Config File (`/mnt/config/mqtt_feeder.conf`)
@@ -264,28 +283,41 @@ The RTSP server is provided by the ArnCo firmware binary (`ak_tuya_rtsp`), which
 
 **The binary swap happens at boot** (see Boot Flow above). The custom rootfs's `start_tuya_ipc.sh` copies ArnCo to `/tmp/bin/ak_tuya_ipc` and starts it after WiFi connects.
 
-**OSD timestamp**: ArnCo renders a date/time overlay in the top-left corner. It reads `save_last_date.txt` at startup and writes the current system time to it. The OSD shows 12-hour time without AM/PM (e.g. `19:36` displays as `7:36`). The timestamp freezes at startup time and does not live-update because the Tuya cloud time service (which normally drives updates) is blocked by the firewall. Correct date requires NTP to have synced before ArnCo starts (handled by `tmp_test.sh`). The `tz_sec` field in `basic_config.ini` controls the timezone offset in seconds (0 = UTC).
+**OSD timestamp**: The overlay updates once per second when `/mnt/config/dp_file_flag/on_osd_file` exists. If the file is absent, the firmware can leave its startup timestamp painted onto otherwise live video. Restoring that flag fixed the stale date on 14 October 2026. The boot hook preserves it. The initial cached time is replaced when the vendor time service establishes the current local time. This installation retains its existing 12-hour display without AM/PM (13:00 Sydney appears as 1:00).
+
+### IR-cut hardware compatibility
+
+The stock feeder executable drives the IR-cut coil with a 200 ms pulse on GPIO80 for day or GPIO81 for night. The installed ArnCo RTSP executable instead uses GPIO23/24 and treats GPIO81 as a speaker-enable output. This mismatch left the infrared filter in the wrong position and produced a pink daylight image. A bounded pulse using the original mapping restored neutral colours.
+
+`scripts/feeder-camera-hardware-fix.sh` corrects only that exact ArnCo build: ten IR-cut GPIO instructions and the incompatible GPIO81 speaker initialisation/control. It verifies the complete source SHA-256, creates a corrected RAM copy, verifies the complete result, then temporarily bind-mounts it over the source used by the unchanged boot script. After the normal boot script copies and starts it, the helper verifies the running file, removes the temporary mount and deletes the extra RAM copy. The immutable firmware and normal boot-time swap remain intact; only `/tmp/bin/ak_tuya_ipc` retains the correction. The helper refuses an unknown executable rather than patching arbitrary offsets.
+
+- Original SHA-256: `5c07bcd7b0bdd0d76583ea15ca0a241f3c467afcc617204eddfe7fa8546fdf23`
+- Corrected SHA-256: `1f37ee7a488e1f5d8b0a0d1c7ac0dba44dcb50ce3aaaff23cc46f82072baedda`
+
+Automatic day/night decisions remain in the camera firmware. The helper never communicates with MQTT or the feeder MCU. To roll back, remove the hardware helper invocation from `tmp_test.sh` and reboot outside a meal window; the original flash executable is unchanged. The live timestamp flag can be retained independently. A host-side `--prepare-only` run supports checksum and byte comparison without mounts or camera actions; use `CAMERA_HW_SOURCE` and `CAMERA_HW_PATCHED` for temporary fixture paths.
 
 ### Adding to Home Assistant
 
-In `configuration.yaml`:
-```yaml
-camera:
-  - platform: generic
-    name: Pet Feeder Camera
-    stream_source: rtsp://10.0.10.129:554/jkstream
-    still_image_url: http://10.0.10.129:554/jkstream  # won't work, use stream
-```
+Use the Generic Camera integration with an RTSP stream source. This installation uses `rtsp://127.0.0.1:8554/kitchen_camera`, backed by `/config/go2rtc.yaml` on HA. Keep RTSP transport TCP and enable **Use wallclock as timestamps** in the integration's advanced options. The feeder can omit packet timestamps; without this option HA's HLS worker reports `No dts in 7 consecutive packets`.
 
-Or add via UI: Settings → Devices → Add Integration → Generic Camera → enter RTSP URL.
+Do not use an HTTP URL on the RTSP port as a still-image URL. The integration generates stills from its stream. A longer FFmpeg probe may be needed when testing the raw stream because parameter sets arrive in-band rather than in SDP. HA browser playback was verified at 1920×1080 after recovery on 14 October 2026.
+
+### Bounded camera logs and recovery
+
+`scripts/feeder-camera-watch.sh` is installed as `/mnt/config/feeder-camera-watch.sh`. A small hook in `tmp_test.sh` launches it once. It waits 90 seconds for normal startup, then checks every 30 seconds. If the existing camera process is missing, it starts the existing `/tmp/bin/ak_tuya_ipc`, with a 120-second retry cooldown. It never sends MQTT, UART or food commands and does not repeat the boot-time binary swap.
+
+The RAM-backed `/tmp/rtsp.log` is trimmed above 256 KiB, retaining its newest 64 KiB and its inode. The camera's ordinary append writer therefore continues writing to the same file. Restart attempts discard their output. On 14 October a 6.8 MB log and an earlier kernel OOM kill were found on this 27 MB device. The evidence log was archived privately, reclaimed, and a normal reboot restored camera operation. A camera-only restart was insufficient after that failure: the watchdog reduces recurrence but cannot guarantee recovery of exhausted kernel camera buffers.
+
+For a non-actuating host retention check, set `CAMERA_WATCH_LOG` and `CAMERA_WATCH_STATE_DIR` to temporary paths and run the script with `--trim-only`.
 
 ### If RTSP Stops Working
 
-1. Check ArnCo binary is running: `ps | grep ak_tuya_ipc`
-2. Check port 554: `netstat -tlnp | grep 554`
-3. If not running, the stock binary probably didn't init hardware. Reboot the device.
-4. Check `/tmp/rtsp.log` for errors
-5. Look for `DEV_SUPPORT_ONVIFSERVER start` in the log — this means RTSP activated
+1. Check `pidof ak_tuya_ipc`, port 554, available memory, and `/tmp/rtsp.log` size.
+2. Read recent log errors and `dmesg` for OOM kills. Preserve needed evidence before clearing a log.
+3. Verify one `feeder-camera-watch.sh` instance and its boot hook; never start a second camera process while one is running.
+4. If the camera process cannot recover after an OOM failure, perform a normal reboot outside a meal window. Allow Wi-Fi, time synchronisation and normal startup to finish.
+5. Verify direct RTSP, HA playback, one MQTT client, idle status and the intended portion setting. A client restart returns portions to its firmware default; setting portions is separate from dispensing.
+6. For a stale timestamp, verify `on_osd_file` and the current device clock. For pink daylight video, verify the corrected running checksum and `/tmp/bin/camera-hardware-fix.log`; do not leave either IR coil continuously energised.
 
 ## Filesystem Layout
 
@@ -301,7 +333,9 @@ Or add via UI: Settings → Devices → Add Integration → Generic Camera → e
 /mnt/config/              # Persistent jffs2 partition
 ├── mqtt_feeder           # Our MQTT bridge binary
 ├── mqtt_feeder.conf      # MQTT config
-├── tmp_test.sh           # Boot hook: copies mqtt_feeder to PATH + NTP sync
+├── tmp_test.sh           # Boot hook: PATH, camera hardware correction, watermark, watchdog
+├── feeder-camera-hardware-fix.sh  # Verified board-specific IR-cut correction
+├── feeder-camera-watch.sh        # Camera recovery and bounded RAM-backed logs
 ├── save_last_date.txt    # ArnCo's cached date (used for OSD timestamp)
 ├── basic_config.ini      # Device config (tz_sec, flip, night mode, etc.)
 ├── dev_config.ini        # Device config (volume, contrast, motion detect)

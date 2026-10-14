@@ -12,7 +12,7 @@
         "\"name\":\"Pet Feeder\"," \
         "\"mf\":\"Advwin\"," \
         "\"mdl\":\"6L Cat Feeder\"," \
-        "\"sw\":\"mqtt_feeder 1.0\"" \
+        "\"sw\":\"mqtt_feeder 1.2\"" \
     "}"
 
 #define AVAILABILITY_JSON \
@@ -45,6 +45,8 @@ int ha_discovery_publish(struct mqtt_client *client) {
             "\"name\":\"Feed\","
             "\"uniq_id\":\"pet_feeder_feed\","
             "\"cmd_t\":\"" TOPIC_PREFIX "/feed/set\","
+            "\"pl_prs\":\"PRESS\","
+            "\"ret\":false,"
             "\"ic\":\"mdi:food-drumstick\","
             AVAILABILITY_JSON ","
             DEVICE_JSON

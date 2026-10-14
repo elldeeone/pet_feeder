@@ -93,6 +93,12 @@ static void publish_portions_state(int value) {
                  MQTT_PUBLISH_QOS_0 | MQTT_PUBLISH_RETAIN);
 }
 
+static void publish_current_state(void) {
+    last_busy = feeder_is_busy(&feed);
+    publish_status(last_busy);
+    publish_portions_state(stored_portions);
+}
+
 /* Called by MQTT-C when we receive a publish from the broker */
 static void message_callback(void **state, struct mqtt_response_publish *pub) {
     char topic[256];
@@ -112,19 +118,41 @@ static void message_callback(void **state, struct mqtt_response_publish *pub) {
 
     printf("[mqtt] received: %s = %s\n", topic, payload);
 
-    if (strcmp(topic, TOPIC_FEED_SET) == 0) {
+    if (pub->topic_name_size == strlen(TOPIC_FEED_SET) &&
+        strcmp(topic, TOPIC_FEED_SET) == 0) {
+        /* A retained command can be replayed when we reconnect. Only accept
+         * a fresh HA button press; never dispense on empty/invalid payloads. */
+        if (pub->retain_flag || pub->dup_flag ||
+            pub->application_message_size != 5 ||
+            memcmp(pub->application_message, "PRESS", 5) != 0) {
+            printf("[mqtt] ignored stale or invalid feed command\n");
+            return;
+        }
         /* Feed button pressed — dispense stored_portions */
         if (feeder_feed(&feed, stored_portions) == 0) {
             publish_status(1);
             last_busy = 1;
         }
-    } else if (strcmp(topic, TOPIC_PORTIONS_SET) == 0) {
+    } else if (pub->topic_name_size == strlen(TOPIC_PORTIONS_SET) &&
+               strcmp(topic, TOPIC_PORTIONS_SET) == 0) {
         /* Slider changed — just store the value, don't feed */
-        int n = atoi(payload);
-        if (n >= 1 && n <= 10) {
+        char *end;
+        long n;
+        if (pub->application_message_size == 0 ||
+            pub->application_message_size >= sizeof(payload) ||
+            memchr(pub->application_message, '\0', plen) != NULL ||
+            payload[0] < '0' || payload[0] > '9') return;
+        errno = 0;
+        n = strtol(payload, &end, 10);
+        /* HA number commands can encode an integer as 3.0. */
+        if (*end == '.' && end[1] == '0') {
+            ++end;
+            while (*end == '0') ++end;
+        }
+        if (errno == 0 && *end == '\0' && n >= 1 && n <= 10) {
             stored_portions = n;
             publish_portions_state(n);
-            printf("[main] portions set to %d\n", n);
+            printf("[main] portions set to %ld\n", n);
         }
     }
 }
@@ -171,14 +199,12 @@ static void reconnect_callback(struct mqtt_client *client, void **state) {
                  MQTT_PUBLISH_QOS_0 | MQTT_PUBLISH_RETAIN);
 
     /* Publish initial state */
-    publish_status(0);
-    publish_portions_state(1);
+    publish_current_state();
 
     /* Publish HA Discovery */
     ha_discovery_publish(client);
 
     printf("[mqtt] session established\n");
-    last_busy = 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -188,7 +214,11 @@ int main(int argc, char *argv[]) {
     /* Line-buffer stdout so logs flush immediately when redirected to file */
     setvbuf(stdout, NULL, _IOLBF, 0);
 
-    printf("mqtt_feeder v1.1 — Pet Feeder MQTT Bridge\n");
+    printf("mqtt_feeder v1.2 — Pet Feeder MQTT Bridge\n");
+
+    /* Permit an on-device compatibility check without opening MQTT or UART. */
+    if (argc == 2 && strcmp(argv[1], "--version") == 0)
+        return 0;
 
     if (argc > 1)
         config_path = argv[1];
